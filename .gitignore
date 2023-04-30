@@ -1,0 +1,26 @@
+# Packages #
+############
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# Logs and databases #
+######################
+*.log
+*.sql
+*.sqlite
+
+# Checkpoints and winner #
+###############
+neat-checkpoint-*
+best.pickle
+
+# Cache and idea #
+##################
+__pycache__
+.idea
