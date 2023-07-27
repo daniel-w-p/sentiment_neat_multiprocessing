@@ -1,181 +1,129 @@
-import multiprocessing
+import multiprocessing as mp
+import sys
+
 import neat
 import os
 import pickle
-import random
 import time
 
 import pandas as pd
 
-from text import WordsDataFrameFromTxt as WordsDF
-from text import BasicAlphabet
+from text import DataText
 from tools import SplitData
-
-INPUT_SIZE = 512
-OUTPUT_SIZE = len(BasicAlphabet.SIGNS)
-NUM_CORES = 8
+from sentiment_genome import SAGenome
 
 
-class SLPGenome(neat.DefaultGenome):
+# Number of cores used while training
+NUM_CORES = 30
+# Flag determines whether to use all cores (if True) or the number above (if False)
+AUTO_NUM_CORES = False
+# Checkpoint write frequency. 1 - means every generation will be saved. 2 - every second generation will be saved.
+CHECKPOINT_FREQ = 4
+# Change to True if no need to train only test run
+TEST_WINNER = False
+# You should give this as first param when run training, if you don't want to start from scratch
+checkpoint_name = ''
+# You should give this as second param when run training.
+number_of_generations = 200
+
+
+class SentimentAnalysis:
     """
-    Alternative genome for this SLP - Small Language Processing
+    Sentiment Analysis class
     """
-    def __init__(self, key):
-        super().__init__(key)
-        self.discount = None
-
-    def configure_new(self, conf):
-        super().configure_new(conf)
-        self.discount = 0.01 + 0.98 * random.random()
-
-    def configure_crossover(self, genome1, genome2, conf):
-        super().configure_crossover(genome1, genome2, conf)
-        self.discount = random.choice((genome1.discount, genome2.discount))
-
-    def mutate(self, conf):
-        super().mutate(conf)
-        self.discount += random.gauss(0.0, 0.05)
-        self.discount = max(0.01, min(0.99, self.discount))
-
-    def distance(self, other, conf):
-        dist = super().distance(other, conf)
-        disc_diff = abs(self.discount - other.discount)
-        return dist + disc_diff + 1.0
-
-    def __str__(self):
-        return f"Reward discount: {self.discount}\n{super().__str__()}"
-
-
-class SLP:
-    """
-    SLP - Small Language Processing train and test class
-    """
-    def __init__(self, train_df: pd.DataFrame, conf):
+    def __init__(self, data_path: str, conf):
         self.config = conf
-        self.alphabet = BasicAlphabet().get_list()
-        self.train_data_frame = train_df
+        self.data = DataText(data_path)
 
     def test_ai(self, net):
         """
-        Test the AI on not known words
+        Test the AI on not known sentences but from known words
         """
-        run = True
-        for counter, word in enumerate(self.train_data_frame):
-            input_list = [''] * INPUT_SIZE
-            predicted_word = []
-            word_list = list(word)
-            input_list = input_list[:-len(word_list)] + word_list
-            while run:
-                # predict next letter
-                output = net.activate(input_list)
-                letter = output.index(max(output))
-                predicted_word.append(letter)
-
-                # end writing when word len is greater than 50 or when predict 'END' sign from alphabet
-                if len(predicted_word) > 50 or self.alphabet[letter] == "E":
-                    break
-
-            print(f"{word} - {predicted_word}")
+        # TODO add data split - test on not known sentences
+        for vector in self.data.vectors:
+            output = net.activate(vector)
+            # idx = int(round(output[0]))    # if one output
+            idx = output.index(max(output))  # if output is list
+            if idx >= self.data.class_count or idx < 0:
+                print("Prediction error! Index out of range.")
+            else:
+                print(self.data.y[idx])
 
         return True
 
-    def train_ai(self, genome, gid) -> [float]:
+    def train_ai(self, genome, gid, id) -> [float]:
         """
         Train the AI by passing NEAT neural networks and the NEAT config object.
         """
-        run = True
         fitness = []
-        print(f"Train genome {gid} started!")
+        print(f"{id}. Train genome {gid} started!")
         net = neat.nn.RecurrentNetwork.create(genome, self.config)
 
-        for word in self.train_data_frame.values:
-            word = word[0]
-            # print(f"Run for word: {word}")
-
-            input_list = [''] * INPUT_SIZE
-            predicted_word = []
-            word_list = list(word)
-            input_list = input_list[:-len(word_list)] + word_list
-            input_list = [self.alphabet.index(n) for n in input_list]
-
-            while run:
-                # predict next letter
-                output = net.activate(input_list)
-                letter = output.index(max(output))
-                predicted_word.append(letter)
-
-                # end writing when word len is greater than 50 or when predict 'END' sign from alphabet
-                if len(predicted_word) > (len(word) + 2) or self.alphabet[letter] == "E":
-                    fitness.append(self.calculate_fitness(word, predicted_word))
-                    break
-
-            # print(f"{word} - {predicted_word}")
-
-        # genome.fitness = fitness
+        for y_class, vector in zip(self.data.y, self.data.vectors):
+            output = net.activate(vector)
+            # idx = int(round(output[0]))    # if one output
+            idx = output.index(max(output))  # if output is list
+            if idx >= self.data.class_count:
+                fitness.append(self.data.class_count - idx)
+            elif idx < 0:
+                fitness.append(idx)
+            elif self.data.y[idx] == y_class:
+                fitness.append(1)
+            else:
+                fitness.append(0)
         return fitness
 
-    def calculate_fitness(self, word, predicted):
-        """fitness based on predicted word"""
-        points = 0
-        word_l = list(word)
-        pred_word = [self.alphabet[i] for i in predicted]
-        # print(f"Calculate fitness for prediction: {pred_word}")
-        if word_l == pred_word:
-            points = 80.0
-        elif word_l == pred_word.append("E"):
-            points = 110.0
-        else:
-            if len(pred_word) > (len(word_l) + 1):
-                points = -2.5 * (len(pred_word) - len(word_l))
-            if len(pred_word) < (len(word_l) - 1):
-                points = -2.5 * (len(word_l) - len(pred_word))
-            for index, letter in enumerate(word_l):
-                if index >= len(pred_word):
-                    continue
-                if letter in pred_word:
-                    points += 0.5
-                if letter == pred_word[index]:
-                    points += 2.
-            if pred_word[len(pred_word)-1] == "E":
-                points += 4.5
-        return points
 
-
-def eval_genomes(genomes, conf):
+def train_genomes(genomes, conf):
     print("Start evaluate genomes!")
-    train = sp.get_train()
-    learn = SLP(train, conf)
+
+    num_cores = NUM_CORES if not AUTO_NUM_CORES else mp.cpu_count()
+
+    print(f"Using {num_cores} cores!")
+
+    learn = SentimentAnalysis("text/sentences.csv", conf)
 
     t0 = time.time()
 
     # Train and assign fitness to each genome.
-    if NUM_CORES < 2:
-        for idx, genome in genomes:
-            fitness = learn.train_ai(genome, idx)
+    if num_cores < 2:
+        for idx, (g_id, genome) in enumerate(genomes):
+            fitness = learn.train_ai(genome, g_id, idx)
             genome.fitness = sum(fitness)
     else:
-        with multiprocessing.Pool(NUM_CORES) as pool:
+        with mp.Pool(num_cores) as pool:
             jobs = []
-            for idx, genome in genomes:
-                jobs.append(pool.apply_async(learn.train_ai, (genome, idx)))
+            for idx, (g_id, genome) in enumerate(genomes):
+                jobs.append(pool.apply_async(learn.train_ai, (genome, g_id, idx)))
 
             for job, (genome_id, genome) in zip(jobs, genomes):
-                fitness = job.get(timeout=None)
-                genome.fitness = sum(fitness)
+                try:
+                    fitness = job.get(timeout=30)
+                    if type(fitness) == [int] or [float]:
+                        genome.fitness = sum(fitness)
+                    else:
+                        genome.fitness = -10
+                except mp.context.TimeoutError:
+                    genome.fitness = -10
+                # finally:
 
     print("final fitness compute time {0}\n".format(time.time() - t0))
 
 
 def run_neat(conf):
     print("Run NEAT!")
-    pop = neat.Checkpointer.restore_checkpoint('neat-checkpoint-70')
-    # pop = neat.Population(conf)
+
+    if checkpoint_name != '':                           # run form checkpoint
+        pop = neat.Checkpointer.restore_checkpoint(checkpoint_name)
+    else:                                               # start from scratch
+        pop = neat.Population(conf)
+
     pop.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
     pop.add_reporter(stats)
-    pop.add_reporter(neat.Checkpointer(1, 1800))
+    pop.add_reporter(neat.Checkpointer(CHECKPOINT_FREQ, 1800))
 
-    winner = pop.run(eval_genomes, 11)
+    winner = pop.run(train_genomes, number_of_generations)
     with open("best.pickle", "wb") as f:
         pickle.dump(winner, f)
 
@@ -185,30 +133,24 @@ def test_network(conf):
         winner = pickle.load(f)
     winner_net = neat.nn.RecurrentNetwork.create(winner, conf)
 
-    eval = SLP(sp.get_test(), conf)
-    eval.test_ai(winner_net)
+    sa = SentimentAnalysis("text/sentences.csv", conf)
+    sa.test_ai(winner_net)
 
 
 if __name__ == '__main__':
     local_dir = os.path.dirname(__file__)
     config_path = os.path.join(local_dir, 'config.txt')
 
-    config = neat.Config(SLPGenome, neat.DefaultReproduction,
+    args = sys.argv
+    print(args)
+    if len(args) > 1:
+        checkpoint_name = args[1]
+    if len(args) > 2:
+        number_of_generations = int(args[2])
+
+    config = neat.Config(SAGenome, neat.DefaultReproduction,
                          neat.DefaultSpeciesSet, neat.DefaultStagnation,
                          config_path)
 
-    words = WordsDF("text/words_alpha.txt").get_words()
-    sp = SplitData(words, 0.9995)
-
-    # alphabet = BasicAlphabet().get_list()
-    # word = 'testowanie'
-    # input_list = [''] * INPUT_SIZE
-    # predicted_word = []
-    # word_list = list(word)
-    # input_list = input_list[:-len(word_list)] + word_list
-    # input_list = [alphabet.index(n) for n in input_list]
-    #
-    # print(input_list)
-
     run_neat(config)
-    # test_network(config)
+    test_network(config)
